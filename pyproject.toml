@@ -1,0 +1,15 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["ml/data/splits", "ml/artifacts", "dashboard"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# B008: FastAPI's `Depends(...)`/`Query(...)` idiom lives in argument defaults.
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/*" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]

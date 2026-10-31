@@ -1,0 +1,135 @@
+name: orbit
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+    args:
+      INSTALL_ML: ${INSTALL_ML:-false}
+      INSTALL_ONNX: ${INSTALL_ONNX:-false}
+  image: orbit-api:local
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    ENVIRONMENT: ${ENVIRONMENT:-production}
+    DATABASE_URL: postgresql+psycopg://orbit:${POSTGRES_PASSWORD:-orbit}@db:5432/orbit
+    REDIS_URL: redis://redis:6379/0
+    QUEUE_BACKEND: celery
+    CELERY_TASK_ALWAYS_EAGER: "false"
+    PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+    DASHBOARD_BASE_URL: ${DASHBOARD_BASE_URL:-http://localhost:3000}
+    CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+    NLU_MODEL_DIR: /app/ml/artifacts/intent-model
+    NLU_ONNX_PATH: /app/ml/artifacts/intent-model/model.onnx
+    FAQ_PATH: /app/ml/data/faqs.jsonl
+    ORDERS_FIXTURE_PATH: /app/ml/data/orders.json
+    NLU_EVALUATION_PATH: /app/ml/artifacts/evaluation/evaluation.json
+  volumes:
+    - ./ml:/app/ml
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: orbit
+      POSTGRES_USER: orbit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orbit}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbit -d orbit"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  api:
+    <<: *backend
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    <<: *backend
+    command:
+      [
+        "celery",
+        "-A",
+        "app.worker.celery_app.celery",
+        "worker",
+        "--loglevel=info",
+        "--concurrency=2",
+      ]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  beat:
+    <<: *backend
+    command:
+      [
+        "celery",
+        "-A",
+        "app.worker.celery_app.celery",
+        "beat",
+        "--loglevel=info",
+        "--schedule=/tmp/celerybeat-schedule",
+      ]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  dashboard:
+    build:
+      context: ./dashboard
+      args:
+        VITE_API_BASE_URL: ""
+    image: orbit-dashboard:local
+    ports:
+      - "${DASHBOARD_PORT:-3000}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Optional public tunnel for Meta webhook development:
+  #   docker compose --profile tunnel up
+  ngrok:
+    image: ngrok/ngrok:latest
+    profiles: ["tunnel"]
+    command: ["http", "api:8000", "--log", "stdout"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    ports:
+      - "4040:4040"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:

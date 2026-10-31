@@ -1,0 +1,5 @@
+# ONNX-only inference: no torch, no training stack. Enough for the tokenizer
+# and onnxruntime graph used by app.nlu.transformer in ONNX mode.
+transformers==4.44.2
+onnxruntime==1.19.2
+numpy==1.26.4
